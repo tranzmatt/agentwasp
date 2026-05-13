@@ -174,6 +174,7 @@ PKG_FAMILY="unknown"
 case "$(uname -s)" in
     Darwin)
         PKG_FAMILY="macos"
+        OS_ID="macos"
         ;;
     MINGW*|MSYS*|CYGWIN*)
         # Git Bash / MSYS / Cygwin on Windows — bash works but Docker, volume
@@ -263,8 +264,16 @@ pkg_install() {
         *)            warn "Cannot install on unknown OS: $*. Install manually and re-run." ; return 1 ;;
     esac
 }
-mem_kb="$(awk '/MemTotal/ {print $2}' /proc/meminfo)"
-mem_gb=$(( mem_kb / 1024 / 1024 ))
+# Memory check — /proc/meminfo is Linux-only. macOS exposes total memory
+# via sysctl hw.memsize (bytes). Default to 0 on detection failure so the
+# downstream warning surfaces something actionable instead of crashing.
+if [[ "$PKG_FAMILY" == "macos" ]]; then
+    mem_bytes="$(sysctl -n hw.memsize 2>/dev/null || echo 0)"
+    mem_gb=$(( mem_bytes / 1024 / 1024 / 1024 ))
+else
+    mem_kb="$(awk '/MemTotal/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+    mem_gb=$(( mem_kb / 1024 / 1024 ))
+fi
 if (( mem_gb < 2 )); then
     warn "Only ${mem_gb}GB RAM detected. WASP needs ≥4GB for comfortable operation."
 elif (( mem_gb < 4 )); then
@@ -281,7 +290,12 @@ ok "CPU cores: ${cpus}"
 # which df rejects. Fall back to "/" in that case.
 _parent_dir="${INSTALL_DIR%/*}"
 [[ -z "$_parent_dir" ]] && _parent_dir="/"
-disk_avail_gb=$(df -BG "$_parent_dir" 2>/dev/null | awk 'NR==2 {gsub("G",""); print $4}')
+# GNU df supports -BG (force GB block size); macOS/BSD df uses -g instead.
+if [[ "$PKG_FAMILY" == "macos" ]]; then
+    disk_avail_gb=$(df -g "$_parent_dir" 2>/dev/null | awk 'NR==2 {print $4}')
+else
+    disk_avail_gb=$(df -BG "$_parent_dir" 2>/dev/null | awk 'NR==2 {gsub("G",""); print $4}')
+fi
 # Strip anything non-numeric (e.g. df on busybox may report "1.5G")
 disk_avail_gb="${disk_avail_gb%%[!0-9]*}"
 disk_avail_gb=${disk_avail_gb:-0}
@@ -291,8 +305,21 @@ else
     ok  "Disk: ${disk_avail_gb}GB free"
 fi
 
+# Port check — `ss` is Linux-only. macOS ships `lsof` by default; use it
+# there. Any failure to detect is non-fatal (just a warning), so the
+# 2>/dev/null fallbacks are intentional.
 for p in 8080 5432 6379; do
-    if ss -ltn 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${p}\$"; then
+    in_use=false
+    if [[ "$PKG_FAMILY" == "macos" ]]; then
+        if lsof -nP -iTCP:${p} -sTCP:LISTEN 2>/dev/null | grep -q LISTEN; then
+            in_use=true
+        fi
+    else
+        if ss -ltn 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${p}\$"; then
+            in_use=true
+        fi
+    fi
+    if $in_use; then
         warn "Port ${p} is in use — WASP service may conflict."
     fi
 done
@@ -382,7 +409,9 @@ else
     ok "Docker installed"
 fi
 
-if [[ "$EUID" -ne 0 ]] && id -nG "$USER" 2>/dev/null | grep -qvw docker; then
+# usermod is Linux-only and irrelevant on macOS — Docker Desktop manages
+# the docker group automatically via its VM/host bridge.
+if [[ "$PKG_FAMILY" != "macos" && "$EUID" -ne 0 ]] && id -nG "$USER" 2>/dev/null | grep -qvw docker; then
     $SUDO usermod -aG docker "$USER" 2>/dev/null || true
     warn "Added $USER to docker group — log out and back in (or 'newgrp docker') to apply."
 fi
