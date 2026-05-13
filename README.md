@@ -38,7 +38,20 @@ That single line:
 
 Default install path: `/opt/wasp`. Default dashboard: `http://<your-host>:8080`.
 
-After install:
+### Verify the installer (optional, recommended)
+
+Prefer to inspect the script before piping it into `bash`? Verify the SHA-256 against the published checksum:
+
+```bash
+curl -fsSL https://agentwasp.com/install.sh -o install.sh
+curl -fsSL https://agentwasp.com/install.sh.sha256 | sha256sum -c -
+# install.sh: OK
+sudo bash install.sh
+```
+
+The Windows installer has the same option: `https://agentwasp.com/install.ps1.sha256`.
+
+### Post-install
 
 ```bash
 wasp status      # see what's running
